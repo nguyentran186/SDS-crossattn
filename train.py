@@ -103,7 +103,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
-        if iteration < 7000:
+        if iteration < 000:
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
             Ll1 = l1_loss(image, gt_image)
@@ -128,7 +128,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 Ll1depth = 0
         else: 
-            loss = train_step()
+            prompt = "smooth the image"
+            loss = train_step(prompt, image)
+            
+            if iteration % 100 == 0:
+                import cv2
+                cv2.imwrite("image.png", image)
         
         loss.backward()
 

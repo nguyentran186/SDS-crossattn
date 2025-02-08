@@ -1,10 +1,12 @@
 from guidance.sd_step import train_step
 from PIL import Image
+import torch
 
 image = Image.open("/root/workspace/dataset/1/images/20220819_104221.jpg")
 mask_image = Image.open("/root/workspace/dataset/1/images/20220819_104221.jpg")
 
-train_step("fuck", image, mask_image)
+loss = train_step("fuck", image, mask_image)
+loss.backward()
 
 # from diffusers import StableDiffusionXLInpaintPipeline
 # import torch

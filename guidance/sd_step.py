@@ -2,6 +2,7 @@ import torch
 from diffusers import StableDiffusionXLInpaintPipeline
 from guidance.utils import retrieve_timesteps
 from torch.cuda.amp import custom_bwd, custom_fwd
+from PIL import Image
 
 class SpecifyGradient(torch.autograd.Function):
     @staticmethod
@@ -24,7 +25,6 @@ pipe = StableDiffusionXLInpaintPipeline.from_pretrained(
     torch_dtype=torch.float16,  # Use float16 for efficiency
 ).to("cuda")  # Move model to GPU if available 
 
-@torch.no_grad()
 def train_step(prompt: str = None,
                image = None,
                mask_image = None,
@@ -46,17 +46,18 @@ def train_step(prompt: str = None,
     device = pipe.device
     batch_size = 1
     
-    # 3. Encode input prompt
-    (
-        prompt_embeds,
-        negative_prompt_embeds,
-        pooled_prompt_embeds,
-        negative_pooled_prompt_embeds,
-    ) = pipe.encode_prompt(
-        prompt=prompt,
-        device=device,
-        do_classifier_free_guidance=do_classifier_free_guidance,
-    )
+    with torch.no_grad():
+        # 3. Encode input prompt
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+        ) = pipe.encode_prompt(
+            prompt=prompt,
+            device=device,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+        )
 
     # 4. set timesteps
     def denoising_value_valid(dnv):
@@ -85,12 +86,19 @@ def train_step(prompt: str = None,
     init_image = pipe.image_processor.preprocess(
         image, height=height, width=width, crops_coords=crops_coords, resize_mode=resize_mode
     )
+    
     init_image = init_image.to(dtype=torch.float32)
     
-    mask = pipe.mask_processor.preprocess(
-        mask_image, height=height, width=width, resize_mode=resize_mode, crops_coords=crops_coords
-    )
+    with torch.no_grad():
+        if mask_image is None:
+            mask_image = torch.zeros((1, 1, height, width), device=device)
+        
+        mask = pipe.mask_processor.preprocess(
+            mask_image, height=height, width=width, resize_mode=resize_mode, crops_coords=crops_coords
+        )
+    
     masked_image = init_image * (mask < 0.5)
+    
     
     # 6. Prepare latent variables
     num_channels_latents = pipe.vae.config.latent_channels
@@ -117,18 +125,19 @@ def train_step(prompt: str = None,
     
     latents, noise = latents_outputs
     
+    with torch.no_grad():
     # 7. Prepare mask latent variables
-    mask, masked_image_latents = pipe.prepare_mask_latents(
-        mask,
-        masked_image,
-        batch_size,
-        height,
-        width,
-        prompt_embeds.dtype,
-        device,
-        generator,
-        do_classifier_free_guidance,
-    )
+        mask, masked_image_latents = pipe.prepare_mask_latents(
+            mask,
+            masked_image,
+            batch_size,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            do_classifier_free_guidance,
+        )
     
     # 8. Check that sizes of mask, masked image and latents match
     if num_channels_unet == 9:
@@ -205,20 +214,20 @@ def train_step(prompt: str = None,
     # predict the noise residual
     added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
 
-    # with torch.no_grad():
-    noise_pred = pipe.unet(
-        latent_model_input,
-        latent_timestep,
-        encoder_hidden_states=prompt_embeds,
-        timestep_cond=None,
-        cross_attention_kwargs=None,
-        added_cond_kwargs=added_cond_kwargs,
-        return_dict=False,
-    )[0]
-    
-    if do_classifier_free_guidance:
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+    with torch.no_grad():
+        noise_pred = pipe.unet(
+            latent_model_input,
+            latent_timestep,
+            encoder_hidden_states=prompt_embeds,
+            timestep_cond=None,
+            cross_attention_kwargs=None,
+            added_cond_kwargs=added_cond_kwargs,
+            return_dict=False,
+        )[0]
+        
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
     
     w = lambda alphas: (((1 - alphas) / alphas) ** 0.5)  
     
@@ -227,8 +236,9 @@ def train_step(prompt: str = None,
     grad = w(alphas[latent_timestep.to(torch.int)]) * (noise_pred - noise)
     
     grad = torch.nan_to_num(grad)
-    loss = SpecifyGradient.apply(latents, grad)
-    
+    # loss = SpecifyGradient.apply(latents, grad)
+    loss = latents.sum()
+
     return loss
 
     
