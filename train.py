@@ -40,7 +40,34 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-from guidance.sd_step import train_step    
+from guidance.sd_step import train_step  
+
+from torchvision.transforms import ToPILImage
+to_pil = ToPILImage()  
+
+from torch.amp import custom_fwd, custom_bwd
+class SpecifyGradient(torch.autograd.Function):
+    @staticmethod
+    @custom_fwd(device_type='cuda')
+    def forward(ctx, input_tensor, gt_grad, mask):
+        # Save the provided gradient and mask for the backward pass.
+        ctx.save_for_backward(gt_grad, mask)
+        # Return a dummy value; its role is to trigger a backward pass that carries a scale.
+        return torch.ones(1, device=input_tensor.device, dtype=input_tensor.dtype)
+
+    @staticmethod
+    @custom_bwd(device_type='cuda')
+    def backward(ctx, grad_scale):
+        # Retrieve the saved ground-truth gradient and mask.
+        gt_grad, mask = ctx.saved_tensors
+        # Apply the mask and scale the gradient.
+        masked_grad = gt_grad * mask * grad_scale
+        # The forward had three inputs: input_tensor, gt_grad, and mask.
+        # We only want to pass a gradient to input_tensor.
+        # Return gradients for input_tensor and None for the others.
+        return masked_grad, None, None
+
+
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
@@ -90,6 +117,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
         vind = viewpoint_indices.pop(rand_idx)
 
+
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -103,7 +131,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
-        if iteration < 000:
+        if iteration < 2000:
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
             Ll1 = l1_loss(image, gt_image)
@@ -128,17 +156,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 Ll1depth = 0
         else: 
-            prompt = "smooth the image"
-            loss = train_step(prompt, image)
+            prompt = "a dog"
             
-            if iteration % 100 == 0:
-                import cv2
-                cv2.imwrite("image.png", image)
+            mask = viewpoint_cam.original_mask.clone().detach()
+            
+            temp_image = image.clone().detach()
+            
+            new_image = image*mask + temp_image*(1-mask)
+            
+            loss = train_step(prompt, new_image, mask)
+            Ll1 = loss
+            Ll1depth = 0
+            
         
         loss.backward()
 
         iter_end.record()
 
+        if iteration % 10 == 0:
+            img = to_pil(image)
+            img.save("output.jpg")
+        
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log

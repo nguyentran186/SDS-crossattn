@@ -1,19 +1,19 @@
 import torch
 from diffusers import StableDiffusionXLInpaintPipeline
 from guidance.utils import retrieve_timesteps
-from torch.cuda.amp import custom_bwd, custom_fwd
+from torch.amp import custom_fwd, custom_bwd
 from PIL import Image
 
 class SpecifyGradient(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
+    @custom_fwd(device_type='cuda')
     def forward(ctx, input_tensor, gt_grad):
         ctx.save_for_backward(gt_grad)
         # we return a dummy value 1, which will be scaled by amp's scaler so we get the scale in backward.
         return torch.ones([1], device=input_tensor.device, dtype=input_tensor.dtype)
 
     @staticmethod
-    @custom_bwd
+    @custom_fwd(device_type='cuda')
     def backward(ctx, grad_scale):
         gt_grad, = ctx.saved_tensors
         gt_grad = gt_grad * grad_scale
@@ -236,9 +236,8 @@ def train_step(prompt: str = None,
     grad = w(alphas[latent_timestep.to(torch.int)]) * (noise_pred - noise)
     
     grad = torch.nan_to_num(grad)
-    # loss = SpecifyGradient.apply(latents, grad)
-    loss = latents.sum()
-
+    loss = SpecifyGradient.apply(latents, grad)
+    
     return loss
 
     

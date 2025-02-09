@@ -1,7 +1,7 @@
 import os
 
 # Define folder path and output file
-folder_path = "/root/workspace/dataset/1/images"
+folder_path = "/root/SDS-crossattn/data/1/images"
 output_file = "first_40_images.txt"
 
 # Get list of image files sorted by name

@@ -31,6 +31,7 @@ class CameraInfo(NamedTuple):
     FovX: np.array
     depth_params: dict
     image_path: str
+    mask_path: str
     image_name: str
     depth_path: str
     width: int
@@ -68,7 +69,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, mask_folder, depths_folder, test_cam_names_list):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -111,11 +112,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
                 print("\n", key, "not found in depths_params")
 
         image_path = os.path.join(images_folder, extr.name)
+        mask_path = os.path.join(mask_folder, extr.name)
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
-                              image_path=image_path, image_name=image_name, depth_path=depth_path,
+                              image_path=image_path, mask_path = mask_path, image_name=image_name, depth_path=depth_path,
                               width=width, height=height, is_test=image_name in test_cam_names_list)
         cam_infos.append(cam_info)
 
@@ -196,9 +198,11 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=Non
         test_cam_names_list = []
 
     reading_dir = "images" if images == None else images
+    mask_dir = "label"
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
-        images_folder=os.path.join(path, reading_dir), 
+        images_folder=os.path.join(path, reading_dir),
+        mask_folder=os.path.join(path, mask_dir),
         depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
