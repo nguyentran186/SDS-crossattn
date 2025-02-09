@@ -14,6 +14,7 @@ from torch import nn
 import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.general_utils import PILtoTorch
+
 import cv2
 
 class Camera(nn.Module):
@@ -43,7 +44,7 @@ class Camera(nn.Module):
         gt_image = resized_image_rgb[:3, ...]
         
         resized_mask_rgb = PILtoTorch(mask, resolution)
-        gt_mask = resized_mask_rgb[:3, ...]
+        gt_mask = resized_mask_rgb[:1, ...]
         
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:

@@ -90,8 +90,8 @@ def train_step(prompt: str = None,
     init_image = init_image.to(dtype=torch.float32)
     
     with torch.no_grad():
-        if mask_image is None:
-            mask_image = torch.zeros((1, 1, height, width), device=device)
+        if mask_image is not None:
+            mask_image = torch.ones((1, 1, height, width), device=device)
         
         mask = pipe.mask_processor.preprocess(
             mask_image, height=height, width=width, resize_mode=resize_mode, crops_coords=crops_coords
@@ -235,7 +235,7 @@ def train_step(prompt: str = None,
     
     grad = w(alphas[latent_timestep.to(torch.int)]) * (noise_pred - noise)
     
-    grad = torch.nan_to_num(grad)
+    grad = torch.nan_to_num(grad * 1)
     loss = SpecifyGradient.apply(latents, grad)
     
     return loss

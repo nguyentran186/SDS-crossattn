@@ -46,28 +46,30 @@ from torchvision.transforms import ToPILImage
 to_pil = ToPILImage()  
 
 from torch.amp import custom_fwd, custom_bwd
-class SpecifyGradient(torch.autograd.Function):
+class MaskGradient(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type='cuda')
-    def forward(ctx, input_tensor, gt_grad, mask):
-        # Save the provided gradient and mask for the backward pass.
-        ctx.save_for_backward(gt_grad, mask)
-        # Return a dummy value; its role is to trigger a backward pass that carries a scale.
-        return torch.ones(1, device=input_tensor.device, dtype=input_tensor.dtype)
+    def forward(ctx, input_tensor, mask):
+        # Save the mask for use in the backward pass.
+        ctx.save_for_backward(mask)
+        # Return the input as is.
+        return input_tensor
 
     @staticmethod
     @custom_bwd(device_type='cuda')
-    def backward(ctx, grad_scale):
-        # Retrieve the saved ground-truth gradient and mask.
-        gt_grad, mask = ctx.saved_tensors
-        # Apply the mask and scale the gradient.
-        masked_grad = gt_grad * mask * grad_scale
-        # The forward had three inputs: input_tensor, gt_grad, and mask.
-        # We only want to pass a gradient to input_tensor.
-        # Return gradients for input_tensor and None for the others.
-        return masked_grad, None, None
+    def backward(ctx, grad_output):
+        (mask,) = ctx.saved_tensors
+        # Multiply the incoming gradient by the mask.
+        grad_input = grad_output * mask
+        # The function had two inputs (input_tensor and mask); no gradient for mask.
+        return grad_input, None
 
+# prompt = ("Ultra-high resolution, photorealistic restoration with enhanced clarity and fine detail. "
+#           "The inpainted region is seamlessly blended with the surrounding area, featuring refined textures, "
+#           "crisp edges, natural lighting, and vibrant colors. A pristine, professional quality finish that looks "
+#           "like a high-end photograph.")
 
+prompt = "a dog"
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
@@ -113,11 +115,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
-
-
+            
+        viewpoint_cam = viewpoint_stack[0]
+        # rand_idx = randint(0, len(viewpoint_indices) - 1)
+        # viewpoint_cam = viewpoint_stack.pop(rand_idx)
+        # vind = viewpoint_indices.pop(rand_idx)
+        
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -126,7 +129,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
+        
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
@@ -155,16 +158,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 Ll1depth = Ll1depth.item()
             else:
                 Ll1depth = 0
-        else: 
-            prompt = "a dog"
-            
+        else:             
             mask = viewpoint_cam.original_mask.clone().detach()
+            mask[mask != 0] = 1
+            _image = MaskGradient.apply(image, mask).clone()
             
-            temp_image = image.clone().detach()
-            
-            new_image = image*mask + temp_image*(1-mask)
-            
-            loss = train_step(prompt, new_image, mask)
+            loss = train_step(prompt, _image, mask)
             Ll1 = loss
             Ll1depth = 0
             
