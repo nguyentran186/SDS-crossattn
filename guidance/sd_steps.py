@@ -30,10 +30,12 @@ def train_step(prompt: str = None,
                mask_image = None,
                guidance_scale: float = 7.5,
                strength: float = 0.9999,
-               num_inference_steps: int = 50,
+               num_inference_steps: int = 10,
                timesteps: int = None,
                eta: float = 0.0,
-               do_classifier_free_guidance: bool = True
+               do_classifier_free_guidance: bool = True,
+               num_inter_steps: int = 0,
+               grad_scale = 1,
                ):
     # 0. Default height and width to unet
     height = pipe.unet.config.sample_size * pipe.vae_scale_factor
@@ -58,6 +60,18 @@ def train_step(prompt: str = None,
             device=device,
             do_classifier_free_guidance=do_classifier_free_guidance,
         )
+        
+        (
+            empty_prompt_embeds,
+            empty_negative_prompt_embeds,
+            empty_pooled_prompt_embeds,
+            empty_negative_pooled_prompt_embeds,
+        ) = pipe.encode_prompt(
+            prompt="",
+            device=device,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+        )
+
 
     # 4. set timesteps
     def denoising_value_valid(dnv):
@@ -172,10 +186,9 @@ def train_step(prompt: str = None,
     negative_target_size = target_size
 
     add_text_embeds = pooled_prompt_embeds
-    if pipe.text_encoder_2 is None:
-        text_encoder_projection_dim = int(pooled_prompt_embeds.shape[-1])
-    else:
-        text_encoder_projection_dim = pipe.text_encoder_2.config.projection_dim
+    empty_add_text_embeds = empty_pooled_prompt_embeds
+
+    text_encoder_projection_dim = pipe.text_encoder_2.config.projection_dim
 
     add_time_ids, add_neg_time_ids = pipe._get_add_time_ids(
         original_size,
@@ -196,25 +209,60 @@ def train_step(prompt: str = None,
         add_text_embeds = torch.cat([negative_pooled_prompt_embeds, add_text_embeds], dim=0)
         add_neg_time_ids = add_neg_time_ids.repeat(batch_size, 1)
         add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+        
+        empty_prompt_embeds = torch.cat([empty_negative_prompt_embeds, empty_prompt_embeds], dim=0)
+        empty_add_text_embeds = torch.cat([empty_negative_pooled_prompt_embeds, empty_add_text_embeds], dim=0)
+        
 
     prompt_embeds = prompt_embeds.to(device)
     add_text_embeds = add_text_embeds.to(device)
+    
+    empty_prompt_embeds = empty_prompt_embeds.to(device)
+    empty_add_text_embeds = empty_add_text_embeds.to(device)
+    
     add_time_ids = add_time_ids.to(device)
 
+    cp_latents = latents.clone()
     # 11. Denoising loop
     # expand the latents if we are doing classifier free guidance
-    latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+    for i, t in enumerate(timesteps[:num_inter_steps]):
+        latent_model_input = torch.cat([cp_latents] * 2) if do_classifier_free_guidance else cp_latents  
     
-    # concat latents, mask, masked_image_latents in the channel dimension
-    latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, latent_timestep)
+        # concat latents, mask, masked_image_latents in the channel dimension
+        latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, latent_timestep)
     
-    if num_channels_unet == 9:
         latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1) 
 
-    # predict the noise residual
-    added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+        # predict the noise residual
+        empty_added_cond_kwargs = {"text_embeds": empty_add_text_embeds, "time_ids": add_time_ids}
 
-    with torch.no_grad():
+        # inter loop
+        with torch.no_grad():       
+            noise_pred = pipe.unet(
+                latent_model_input,
+                latent_timestep,
+                encoder_hidden_states=empty_prompt_embeds,
+                timestep_cond=None,
+                cross_attention_kwargs=None,
+                added_cond_kwargs=empty_added_cond_kwargs,
+                return_dict=False,
+            )[0]
+            
+            if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            cp_latents = pipe.scheduler.step(noise_pred, t, cp_latents, **extra_step_kwargs, return_dict=False)[0]
+            del noise_pred
+            torch.cuda.empty_cache()
+    
+    # last loop
+    latent_model_input = torch.cat([cp_latents] * 2) if do_classifier_free_guidance else cp_latents  
+    latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, latent_timestep)
+    latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1) 
+    added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+    empty_added_cond_kwargs = {"text_embeds": empty_add_text_embeds, "time_ids": add_time_ids}
+    
+    with torch.no_grad():       
         noise_pred = pipe.unet(
             latent_model_input,
             latent_timestep,
@@ -228,16 +276,31 @@ def train_step(prompt: str = None,
         if do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+        
+        empty_noise_pred = pipe.unet(
+            latent_model_input,
+            latent_timestep,
+            encoder_hidden_states=empty_prompt_embeds,
+            timestep_cond=None,
+            cross_attention_kwargs=None,
+            added_cond_kwargs=empty_added_cond_kwargs,
+            return_dict=False,
+        )[0]
+        
+        if do_classifier_free_guidance:
+            empty_noise_pred_uncond, empty_noise_pred_text = empty_noise_pred.chunk(2)
+            empty_noise_pred = empty_noise_pred_uncond + guidance_scale * (empty_noise_pred_text - empty_noise_pred_uncond)
+    
     
     w = lambda alphas: (((1 - alphas) / alphas) ** 0.5)  
     
     alphas = pipe.scheduler.alphas_cumprod.to(device)
     
-    grad = w(alphas[latent_timestep.to(torch.int)]) * (noise_pred - noise)
+    grad = w(alphas[latent_timestep.to(torch.int)]) * (noise_pred - empty_noise_pred)
     
-    grad = torch.nan_to_num(grad * 1)
+    grad = torch.nan_to_num(grad * grad_scale)
     loss = SpecifyGradient.apply(latents, grad)
-
+    
     return loss
 
     

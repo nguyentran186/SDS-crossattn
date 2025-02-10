@@ -31,10 +31,7 @@ pipe = StableDiffusionXLInpaintPipeline.from_pretrained(
     torch_dtype=torch.float16,  # Use float16 for efficiency.
 ).to("cuda")  # Move model to GPU.
 
-prompt = ("Ultra-high resolution, photorealistic restoration with enhanced clarity and fine detail. "
-          "The inpainted region is seamlessly blended with the surrounding area, featuring refined textures, "
-          "crisp edges, natural lighting, and vibrant colors. A pristine, professional quality finish that looks "
-          "like a high-end photograph.")
+prompt = ("enhance the quality")
 
 # Run the inpainting pipeline.
 result = pipe(prompt=prompt, image=input_image, mask_image=mask_image, num_inference_steps=20)

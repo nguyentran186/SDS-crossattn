@@ -40,7 +40,7 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-from guidance.sd_step import train_step  
+from guidance.sd_steps import train_step  
 
 from torchvision.transforms import ToPILImage
 to_pil = ToPILImage()  
